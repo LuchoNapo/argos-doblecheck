@@ -1,0 +1,704 @@
+"""
+Argos · Doble Check — Procesador de Video
+Aenima · Fluxer · Bound  /  Cliente: Paladini Argentina
+
+Uso: streamlit run app.py
+"""
+
+import os, json, subprocess, glob, time, shutil, tempfile
+import streamlit as st
+import whisper
+from fpdf import FPDF
+from PIL import Image
+
+# ─── Config ──────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="Argos · Doble Check",
+    page_icon="🎬",
+    layout="centered",
+    initial_sidebar_state="collapsed",
+)
+
+MARGEN = 12.0          # mm
+WHISPER_MODEL = "small"   # medium requires ~1.5GB RAM; small fits Streamlit Cloud
+
+
+# ─── CSS — Estética bound.film ────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@300;400;500&display=swap');
+
+/* Reset base */
+html, body, [data-testid="stAppViewContainer"] {
+    background-color: #000 !important;
+    color: #fff !important;
+}
+[data-testid="stAppViewContainer"] {
+    background-color: #000 !important;
+}
+[data-testid="stHeader"] {
+    background-color: #000 !important;
+    border-bottom: 1px solid #1a1a1a;
+}
+[data-testid="stMain"] {
+    background-color: #000 !important;
+}
+.main .block-container {
+    background-color: #000 !important;
+    padding-top: 0 !important;
+    max-width: 780px;
+}
+
+/* Tipografía global */
+* { font-family: 'Space Grotesk', sans-serif !important; }
+code, pre, .mono { font-family: 'IBM Plex Mono', monospace !important; }
+
+/* ── Header ── */
+.argos-header {
+    border-bottom: 1px solid #222;
+    padding: 36px 0 28px;
+    margin-bottom: 48px;
+}
+.argos-eyebrow {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    color: #555;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+}
+.argos-logo {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: #fff;
+}
+.argos-logo span {
+    color: #E8FF00;
+}
+.argos-title {
+    font-size: 42px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.0;
+    color: #fff;
+    margin: 16px 0 8px;
+}
+.argos-subtitle {
+    font-size: 14px;
+    color: #555;
+    letter-spacing: 0.04em;
+    font-weight: 400;
+}
+
+/* ── Sección ── */
+.section-label {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    color: #444;
+    text-transform: uppercase;
+    margin-bottom: 20px;
+    padding-top: 32px;
+    border-top: 1px solid #1a1a1a;
+}
+
+/* ── Upload zone ── */
+[data-testid="stFileUploader"] {
+    background: #0a0a0a !important;
+    border: 1px solid #222 !important;
+    border-radius: 0 !important;
+    padding: 16px !important;
+}
+[data-testid="stFileUploader"]:hover {
+    border-color: #E8FF00 !important;
+}
+[data-testid="stFileUploader"] label {
+    color: #888 !important;
+    font-size: 13px !important;
+}
+[data-testid="stFileUploaderDropzone"] {
+    background: transparent !important;
+    border: 1px dashed #333 !important;
+    border-radius: 0 !important;
+}
+[data-testid="stFileUploaderDropzoneInstructions"] p {
+    color: #666 !important;
+    font-size: 12px !important;
+}
+
+/* ── Info card ── */
+.info-card {
+    background: #0d0d0d;
+    border: 1px solid #1e1e1e;
+    padding: 20px 24px;
+    margin: 20px 0;
+    display: flex;
+    gap: 32px;
+}
+.info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.info-label {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    color: #444;
+    text-transform: uppercase;
+}
+.info-value {
+    font-size: 15px;
+    font-weight: 500;
+    color: #fff;
+}
+.info-value.accent {
+    color: #E8FF00;
+}
+
+/* ── Timecode barra ── */
+.timecode-bar {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 11px;
+    color: #E8FF00;
+    letter-spacing: 0.15em;
+    background: #0a0a0a;
+    border: 1px solid #1e1e1e;
+    padding: 10px 16px;
+    margin: 8px 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.timecode-rec {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #ff3b3b;
+}
+.timecode-dot {
+    width: 6px;
+    height: 6px;
+    background: #ff3b3b;
+    border-radius: 50%;
+    display: inline-block;
+    animation: blink 1s step-end infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ── Progress ── */
+[data-testid="stProgress"] > div > div {
+    background: #1a1a1a !important;
+    border-radius: 0 !important;
+    height: 3px !important;
+}
+[data-testid="stProgress"] > div > div > div {
+    background: #E8FF00 !important;
+    border-radius: 0 !important;
+}
+
+/* ── Log / status ── */
+.log-box {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 11px;
+    color: #666;
+    background: #050505;
+    border: 1px solid #1a1a1a;
+    padding: 16px 20px;
+    line-height: 2;
+    margin: 16px 0;
+    max-height: 260px;
+    overflow-y: auto;
+}
+.log-line { color: #555; }
+.log-line.done { color: #888; }
+.log-line.active {
+    color: #E8FF00;
+}
+.log-line.active::before {
+    content: '▶ ';
+    color: #E8FF00;
+}
+.log-line.done::before {
+    content: '✓ ';
+    color: #2ecc71;
+}
+.log-line.pending::before {
+    content: '· ';
+    color: #333;
+}
+
+/* ── Botón primario ── */
+[data-testid="stButton"] > button {
+    background: #E8FF00 !important;
+    color: #000 !important;
+    border: none !important;
+    border-radius: 0 !important;
+    font-weight: 700 !important;
+    font-size: 12px !important;
+    letter-spacing: 0.15em !important;
+    text-transform: uppercase !important;
+    padding: 14px 32px !important;
+    transition: opacity 0.2s !important;
+    width: 100% !important;
+}
+[data-testid="stButton"] > button:hover {
+    opacity: 0.85 !important;
+}
+[data-testid="stButton"] > button:disabled {
+    background: #1a1a1a !important;
+    color: #444 !important;
+}
+
+/* ── Download button ── */
+[data-testid="stDownloadButton"] > button {
+    background: transparent !important;
+    color: #E8FF00 !important;
+    border: 1px solid #E8FF00 !important;
+    border-radius: 0 !important;
+    font-weight: 600 !important;
+    font-size: 11px !important;
+    letter-spacing: 0.15em !important;
+    text-transform: uppercase !important;
+    padding: 12px 24px !important;
+    width: 100% !important;
+}
+[data-testid="stDownloadButton"] > button:hover {
+    background: #E8FF00 !important;
+    color: #000 !important;
+}
+
+/* ── Result card ── */
+.result-block {
+    border: 1px solid #222;
+    padding: 24px;
+    margin: 12px 0;
+    background: #080808;
+}
+.result-title {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 10px;
+    letter-spacing: 0.2em;
+    color: #555;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}
+.result-meta {
+    font-size: 22px;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: -0.01em;
+}
+.result-sub {
+    font-size: 12px;
+    color: #444;
+    margin-top: 4px;
+}
+
+/* ── Footer ── */
+.argos-footer {
+    margin-top: 80px;
+    padding-top: 24px;
+    border-top: 1px solid #111;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.footer-left {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    color: #2a2a2a;
+    text-transform: uppercase;
+}
+.footer-right {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    color: #2a2a2a;
+}
+
+/* Ocultar elementos Streamlit que no queremos */
+[data-testid="stDecoration"] { display: none !important; }
+#MainMenu { display: none !important; }
+footer { display: none !important; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ─── Funciones de procesamiento ───────────────────────────────────────────────
+
+def get_video_info(path: str) -> dict:
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-show_entries", "stream=width,height",
+        "-select_streams", "v:0",
+        "-of", "json", path
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    data = json.loads(r.stdout)
+    w = int(data["streams"][0]["width"])
+    h = int(data["streams"][0]["height"])
+    dur = float(data.get("format", {}).get("duration", 0) or 0)
+    return {"width": w, "height": h, "duration": dur}
+
+
+def extract_frames(video_path: str, frames_dir: str):
+    os.makedirs(frames_dir, exist_ok=True)
+    subprocess.run([
+        "ffmpeg", "-i", video_path,
+        "-vf", "fps=1",
+        "-q:v", "2",
+        os.path.join(frames_dir, "frame_%04d.jpg"),
+        "-hide_banner", "-loglevel", "error", "-y"
+    ], check=True)
+
+
+def extract_audio(video_path: str, audio_path: str):
+    subprocess.run([
+        "ffmpeg", "-i", video_path,
+        "-ac", "1", "-ar", "16000",
+        audio_path,
+        "-hide_banner", "-loglevel", "error", "-y"
+    ], check=True)
+
+
+def transcribe(audio_path: str) -> list[dict]:
+    model = whisper.load_model(WHISPER_MODEL)
+    result = model.transcribe(audio_path, language="es", verbose=False)
+    return result["segments"]
+
+
+def build_txt(segments: list[dict], name: str) -> bytes:
+    lines = [f"TRANSCRIPCIÓN · {name}\n{'=' * 60}\n\n"]
+    lines.append("=== TEXTO COMPLETO ===\n\n")
+    lines.append(" ".join(s["text"].strip() for s in segments))
+    lines.append("\n\n=== CON TIMESTAMPS ===\n\n")
+    for s in segments:
+        ini = int(s["start"])
+        fin = int(s["end"])
+        lines.append(f"[{ini:02d}s - {fin:02d}s] {s['text'].strip()}\n")
+    return "".join(lines).encode("utf-8")
+
+
+def fit_image(iw, ih, aw, ah):
+    if iw / ih > aw / ah:
+        return aw, aw * ih / iw
+    return ah * iw / ih, ah
+
+
+def build_pdf(frames_dir: str, name: str, vw: int, vh: int, dur: float) -> bytes:
+    is_vert = vh > vw
+    if is_vert:
+        ori, pw, ph = "P", 210.0, 297.0
+        ori_str = f"Vertical 9:16 > A4 Portrait"
+    else:
+        ori, pw, ph = "L", 297.0, 210.0
+        ori_str = f"Horizontal 16:9 > A4 Landscape"
+
+    aw, ah = pw - 2 * MARGEN, ph - 2 * MARGEN
+
+    pdf = FPDF(orientation=ori, unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=False)
+    pdf.set_margins(0, 0, 0)
+
+    # Portada
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.set_y(40)
+    pdf.set_text_color(0, 0, 0)
+    # Franja superior
+    pdf.set_fill_color(20, 20, 20)
+    pdf.rect(0, 0, pw, 28, "F")
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_text_color(200, 200, 200)
+    pdf.set_xy(MARGEN, 10)
+    pdf.cell(pw - 2 * MARGEN, 8, "ARGOS . DOBLE CHECK / AENIMA . FLUXER . BOUND")
+    # Cuerpo portada
+    pdf.set_text_color(30, 30, 30)
+    pdf.set_font("Helvetica", "B", 28)
+    pdf.set_xy(MARGEN, 50)
+    pdf.multi_cell(pw - 2 * MARGEN, 12, name, align="L")
+    pdf.set_font("Helvetica", "", 11)
+    pdf.set_text_color(100, 100, 100)
+    y = pdf.get_y() + 10
+    for label, val in [
+        ("Resolucion", f"{vw} x {vh} px"),
+        ("Duracion", f"{int(dur)}s"),
+        ("Orientacion", ori_str),
+        ("Frames", f"{len(sorted(glob.glob(os.path.join(frames_dir, '*.jpg'))))}"),
+        ("Modelo Whisper", WHISPER_MODEL.upper()),
+        ("Cliente", "Paladini Argentina"),
+    ]:
+        pdf.set_xy(MARGEN, y)
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_text_color(160, 160, 160)
+        pdf.cell(50, 6, label.upper())
+        pdf.set_font("Helvetica", "", 8)
+        pdf.set_text_color(60, 60, 60)
+        pdf.cell(0, 6, val)
+        y += 9
+
+    # Franja inferior portada
+    pdf.set_fill_color(20, 20, 20)
+    pdf.rect(0, ph - 12, pw, 12, "F")
+    pdf.set_font("Helvetica", "", 7)
+    pdf.set_text_color(100, 100, 100)
+    pdf.set_xy(MARGEN, ph - 9)
+    pdf.cell(0, 6, "Archivo generado para uso interno. No distribuir.")
+
+    # Frames
+    frames = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
+    for i, fp in enumerate(frames):
+        with Image.open(fp) as img:
+            fw, fh = img.size
+        iw, ih = fit_image(fw, fh, aw, ah)
+        x = (pw - iw) / 2
+        y = (ph - ih) / 2
+        pdf.add_page()
+        pdf.image(fp, x=x, y=y, w=iw, h=ih)
+        # Franja inferior con timecode
+        pdf.set_fill_color(12, 12, 12)
+        pdf.rect(0, ph - 10, pw, 10, "F")
+        pdf.set_font("Helvetica", "B", 8)
+        pdf.set_text_color(180, 180, 180)
+        pdf.set_xy(MARGEN, ph - 7)
+        seg = i + 1
+        m, s = seg // 60, seg % 60
+        pdf.cell(pw - 2 * MARGEN, 5,
+                 f"00:{m:02d}:{s:02d}:00   FRAME {i+1:03d} / {len(frames):03d}   {name}",
+                 align="L")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    pdf.output(tmp.name)
+    with open(tmp.name, "rb") as f:
+        data = f.read()
+    os.unlink(tmp.name)
+    return data
+
+
+# ─── UI ───────────────────────────────────────────────────────────────────────
+
+# Header
+st.markdown("""
+<div class="argos-header">
+  <div class="argos-eyebrow">Aenima · Fluxer · Bound — Sistema QA</div>
+  <div class="argos-logo">ARGOS <span>·</span> DOBLE CHECK</div>
+  <div class="argos-title">Procesador<br>de Video</div>
+  <div class="argos-subtitle">Preparación de assets para análisis de marca — Cliente Paladini Argentina</div>
+</div>
+""", unsafe_allow_html=True)
+
+# Upload
+st.markdown('<div class="section-label">01 · Subir video</div>', unsafe_allow_html=True)
+uploaded = st.file_uploader(
+    "Arrastrá o seleccioná el video de la pieza",
+    type=["mp4", "mov", "avi", "mkv", "webm"],
+    label_visibility="collapsed"
+)
+
+if uploaded:
+    # Guardar en temp
+    tmp_dir = tempfile.mkdtemp()
+    video_path = os.path.join(tmp_dir, uploaded.name)
+    with open(video_path, "wb") as f:
+        f.write(uploaded.getbuffer())
+
+    # Info del video
+    info = get_video_info(video_path)
+    vw, vh, dur = info["width"], info["height"], info["duration"]
+    is_vert = vh > vw
+    ori_label = "Vertical 9:16" if is_vert else "Horizontal 16:9"
+    name = os.path.splitext(uploaded.name)[0]
+
+    st.markdown(f"""
+    <div class="info-card">
+      <div class="info-item">
+        <span class="info-label">Archivo</span>
+        <span class="info-value">{uploaded.name[:32]}{"…" if len(uploaded.name) > 32 else ""}</span>
+      </div>
+      <div class="info-item">
+        <span class="info-label">Resolucion</span>
+        <span class="info-value">{vw}×{vh}</span>
+      </div>
+      <div class="info-item">
+        <span class="info-label">Duracion</span>
+        <span class="info-value">{int(dur)}s</span>
+      </div>
+      <div class="info-item">
+        <span class="info-label">Formato</span>
+        <span class="info-value accent">{ori_label}</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="section-label">02 · Procesar</div>', unsafe_allow_html=True)
+
+    if st.button("▶  INICIAR PROCESAMIENTO"):
+        frames_dir = os.path.join(tmp_dir, "frames")
+        audio_path = os.path.join(tmp_dir, "audio.wav")
+        pdf_bytes = None
+        txt_bytes = None
+
+        # Timecode display
+        tc_placeholder = st.empty()
+        progress = st.progress(0)
+        log_placeholder = st.empty()
+
+        steps = [
+            ("Extrayendo frames", "01"),
+            ("Extrayendo audio", "02"),
+            ("Transcribiendo con Whisper", "03"),
+            ("Generando PDF", "04"),
+        ]
+
+        def render_log(current: int):
+            lines = []
+            for i, (label, num) in enumerate(steps):
+                if i < current:
+                    cls = "done"
+                elif i == current:
+                    cls = "active"
+                else:
+                    cls = "pending"
+                lines.append(f'<div class="log-line {cls}">{num} · {label}</div>')
+            log_placeholder.markdown(
+                f'<div class="log-box">{"".join(lines)}</div>',
+                unsafe_allow_html=True
+            )
+
+        def tick_timecode(frame_n: int, total: int):
+            m = frame_n // 60
+            s = frame_n % 60
+            pct = int((frame_n / max(total, 1)) * 100)
+            tc_placeholder.markdown(f"""
+            <div class="timecode-bar">
+              <span><span class="timecode-rec"><span class="timecode-dot"></span>REC</span></span>
+              <span>00:{m:02d}:{s:02d}:00</span>
+              <span>{pct}% · {frame_n}/{total} frames</span>
+              <span>4K · 1fps</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Paso 1 — Frames
+        render_log(0)
+        tick_timecode(0, int(dur))
+        progress.progress(5)
+        extract_frames(video_path, frames_dir)
+        frames = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
+        tick_timecode(len(frames), len(frames))
+        progress.progress(25)
+
+        # Paso 2 — Audio
+        render_log(1)
+        extract_audio(video_path, audio_path)
+        progress.progress(40)
+
+        # Paso 3 — Transcripción
+        render_log(2)
+        segments = transcribe(audio_path)
+        txt_bytes = build_txt(segments, name)
+        progress.progress(70)
+
+        # Paso 4 — PDF
+        render_log(3)
+        pdf_bytes = build_pdf(frames_dir, name, vw, vh, dur)
+        progress.progress(100)
+
+        # Log final
+        log_placeholder.markdown("""
+        <div class="log-box">
+          <div class="log-line done">01 · Frames extraídos</div>
+          <div class="log-line done">02 · Audio extraído</div>
+          <div class="log-line done">03 · Transcripción completada</div>
+          <div class="log-line done">04 · PDF generado</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        tc_placeholder.markdown(f"""
+        <div class="timecode-bar" style="border-color:#E8FF00">
+          <span style="color:#E8FF00;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.15em">
+            PROCESO COMPLETADO
+          </span>
+          <span>{len(frames)} frames · {len(segments)} segmentos de audio</span>
+          <span>{ori_label}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Resultados
+        st.markdown('<div class="section-label">03 · Descargar archivos</div>', unsafe_allow_html=True)
+
+        size_pdf = len(pdf_bytes) / (1024 * 1024)
+        size_txt = len(txt_bytes) / 1024
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"""
+            <div class="result-block">
+              <div class="result-title">PDF · Frames visuales</div>
+              <div class="result-meta">{len(frames)} páginas</div>
+              <div class="result-sub">{size_pdf:.1f} MB · {ori_label}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.download_button(
+                label="↓  DESCARGAR PDF",
+                data=pdf_bytes,
+                file_name=f"{name}_doblecheck.pdf",
+                mime="application/pdf",
+                key="dl_pdf"
+            )
+        with col2:
+            st.markdown(f"""
+            <div class="result-block">
+              <div class="result-title">TXT · Transcripción</div>
+              <div class="result-meta">{len(segments)} segmentos</div>
+              <div class="result-sub">{size_txt:.1f} KB · Whisper {WHISPER_MODEL}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.download_button(
+                label="↓  DESCARGAR TXT",
+                data=txt_bytes,
+                file_name=f"{name}_transcripcion.txt",
+                mime="text/plain",
+                key="dl_txt"
+            )
+
+        # Cleanup
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        st.markdown("""
+        <div style="margin-top:24px; padding:16px; border:1px solid #1a1a1a; background:#050505;">
+          <span style="font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:0.15em; color:#555; text-transform:uppercase;">
+            PRÓXIMO PASO
+          </span>
+          <p style="font-size:13px; color:#888; margin:8px 0 0; line-height:1.6;">
+            Subí el PDF y el TXT al Project <strong style="color:#fff">Argos</strong> en Claude para iniciar el análisis de marca.
+          </p>
+        </div>
+        """, unsafe_allow_html=True)
+
+else:
+    # Estado vacío
+    st.markdown("""
+    <div style="border:1px dashed #1a1a1a; padding:48px; text-align:center; margin:24px 0;">
+      <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:0.2em; color:#333; text-transform:uppercase; margin-bottom:12px;">
+        EN ESPERA
+      </div>
+      <div style="font-size:13px; color:#3a3a3a; line-height:1.7;">
+        Subí un video MP4, MOV o MKV para comenzar.<br>
+        El sistema extraerá los frames y transcribirá el audio<br>
+        para preparar los archivos para revisión en Claude.
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Footer
+st.markdown("""
+<div class="argos-footer">
+  <div class="footer-left">Argos · Doble Check v2026 — Uso interno exclusivo</div>
+  <div class="footer-right">Aenima · Fluxer · Bound / AR</div>
+</div>
+""", unsafe_allow_html=True)
