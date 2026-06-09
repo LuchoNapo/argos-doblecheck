@@ -8,6 +8,11 @@ Uso: streamlit run app.py
 import os, json, subprocess, glob, time, shutil, tempfile
 import streamlit as st
 import whisper
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
 from fpdf import FPDF
 from PIL import Image
 
@@ -20,7 +25,8 @@ st.set_page_config(
 )
 
 MARGEN = 12.0          # mm
-WHISPER_MODEL = "medium"  # upgrade for better Spanish accuracy; falls back to small on OOM
+WHISPER_MODEL = "small"   # local fallback si no hay Groq API key
+GROQ_MODEL    = "whisper-large-v3"  # API de Groq — mejor calidad, corre en sus servidores
 
 # ─── Session state init ───────────────────────────────────────────────────────
 for key in ("pdf_bytes", "txt_bytes", "result_meta", "processed_name"):
@@ -377,18 +383,37 @@ def extract_audio(video_path: str, audio_path: str):
     ], check=True)
 
 
-def transcribe(audio_path: str) -> list[dict]:
-    model_name = WHISPER_MODEL
-    try:
-        model = whisper.load_model(model_name)
-        result = model.transcribe(audio_path, language="es", verbose=False)
-        return result["segments"]
-    except (RuntimeError, MemoryError):
-        # Fallback a small si no hay RAM suficiente (ej. Streamlit Cloud free tier)
-        st.warning("⚠️  RAM insuficiente para Whisper medium — usando modelo small.")
-        model = whisper.load_model("small")
-        result = model.transcribe(audio_path, language="es", verbose=False)
-        return result["segments"]
+def transcribe(audio_path: str) -> tuple[list[dict], str]:
+    """
+    Transcribe con Groq Whisper large-v3 si hay API key configurada,
+    sino cae a Whisper small local.
+    Devuelve (segmentos, modelo_usado).
+    """
+    groq_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else ""
+
+    if groq_key and GROQ_AVAILABLE:
+        try:
+            client = Groq(api_key=groq_key)
+            with open(audio_path, "rb") as f:
+                response = client.audio.transcriptions.create(
+                    file=(os.path.basename(audio_path), f.read()),
+                    model=GROQ_MODEL,
+                    language="es",
+                    response_format="verbose_json",
+                    timestamp_granularities=["segment"],
+                )
+            segments = [
+                {"start": s.start, "end": s.end, "text": s.text}
+                for s in response.segments
+            ]
+            return segments, f"Groq / {GROQ_MODEL}"
+        except Exception as e:
+            st.warning(f"⚠️  Groq API error: {e} — usando Whisper small local.")
+
+    # Fallback local
+    model = whisper.load_model(WHISPER_MODEL)
+    result = model.transcribe(audio_path, language="es", verbose=False)
+    return result["segments"], f"Whisper local / {WHISPER_MODEL}"
 
 
 def build_txt(segments: list[dict], name: str) -> bytes:
@@ -623,7 +648,7 @@ if uploaded:
 
             # Paso 3 — Transcripción
             render_log(2)
-            segments = transcribe(audio_path)
+            segments, model_used = transcribe(audio_path)
             txt_bytes = build_txt(segments, name)
             progress.progress(70)
 
@@ -642,6 +667,7 @@ if uploaded:
                 "ori_label": ori_label,
                 "size_pdf": len(pdf_bytes) / (1024 * 1024),
                 "size_txt": len(txt_bytes) / 1024,
+                "model_used": model_used,
             }
 
             # Log y timecode final
@@ -659,7 +685,7 @@ if uploaded:
               <span style="color:#E8FF00;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.15em">
                 PROCESO COMPLETADO
               </span>
-              <span>{len(frames)} frames · {len(segments)} segmentos</span>
+              <span>{len(frames)} frames · {len(segments)} segmentos · {model_used}</span>
               <span>{ori_label}</span>
             </div>
             """, unsafe_allow_html=True)
