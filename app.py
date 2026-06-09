@@ -402,10 +402,13 @@ def transcribe(audio_path: str) -> tuple[list[dict], str]:
                     response_format="verbose_json",
                     timestamp_granularities=["segment"],
                 )
-            segments = [
-                {"start": s.start, "end": s.end, "text": s.text}
-                for s in response.segments
-            ]
+            # Los segmentos pueden venir como objetos o como dicts según la versión del SDK
+            segments = []
+            for s in response.segments:
+                if isinstance(s, dict):
+                    segments.append({"start": s["start"], "end": s["end"], "text": s["text"]})
+                else:
+                    segments.append({"start": s.start, "end": s.end, "text": s.text})
             return segments, f"Groq / {GROQ_MODEL}"
         except Exception as e:
             st.warning(f"⚠️  Groq API error: {e} — usando Whisper small local.")
