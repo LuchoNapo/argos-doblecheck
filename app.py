@@ -20,7 +20,7 @@ st.set_page_config(
 )
 
 MARGEN = 12.0          # mm
-WHISPER_MODEL = "small"   # medium requires ~1.5GB RAM; small fits Streamlit Cloud
+WHISPER_MODEL = "medium"  # upgrade for better Spanish accuracy; falls back to small on OOM
 
 # ─── Session state init ───────────────────────────────────────────────────────
 for key in ("pdf_bytes", "txt_bytes", "result_meta", "processed_name"):
@@ -378,9 +378,17 @@ def extract_audio(video_path: str, audio_path: str):
 
 
 def transcribe(audio_path: str) -> list[dict]:
-    model = whisper.load_model(WHISPER_MODEL)
-    result = model.transcribe(audio_path, language="es", verbose=False)
-    return result["segments"]
+    model_name = WHISPER_MODEL
+    try:
+        model = whisper.load_model(model_name)
+        result = model.transcribe(audio_path, language="es", verbose=False)
+        return result["segments"]
+    except (RuntimeError, MemoryError):
+        # Fallback a small si no hay RAM suficiente (ej. Streamlit Cloud free tier)
+        st.warning("⚠️  RAM insuficiente para Whisper medium — usando modelo small.")
+        model = whisper.load_model("small")
+        result = model.transcribe(audio_path, language="es", verbose=False)
+        return result["segments"]
 
 
 def build_txt(segments: list[dict], name: str) -> bytes:
