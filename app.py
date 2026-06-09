@@ -22,6 +22,11 @@ st.set_page_config(
 MARGEN = 12.0          # mm
 WHISPER_MODEL = "small"   # medium requires ~1.5GB RAM; small fits Streamlit Cloud
 
+# ─── Session state init ───────────────────────────────────────────────────────
+for key in ("pdf_bytes", "txt_bytes", "result_meta", "processed_name"):
+    if key not in st.session_state:
+        st.session_state[key] = None
+
 
 # ─── CSS — Estética bound.film ────────────────────────────────────────────────
 st.markdown("""
@@ -105,6 +110,12 @@ code, pre, .mono { font-family: 'IBM Plex Mono', monospace !important; }
 }
 
 /* ── Upload zone ── */
+[data-testid="stFileUploaderDropzoneInstructions"] button {
+    display: none !important;
+}
+[data-testid="stFileUploader"] > label {
+    display: none !important;
+}
 [data-testid="stFileUploader"] {
     background: #0a0a0a !important;
     border: 1px solid #222 !important;
@@ -537,115 +548,146 @@ if uploaded:
 
     st.markdown('<div class="section-label">02 · Procesar</div>', unsafe_allow_html=True)
 
-    if st.button("▶  INICIAR PROCESAMIENTO"):
-        frames_dir = os.path.join(tmp_dir, "frames")
-        audio_path = os.path.join(tmp_dir, "audio.wav")
-        pdf_bytes = None
-        txt_bytes = None
+    # Si ya procesamos este mismo archivo, saltear y mostrar resultados directamente
+    already_done = (
+        st.session_state.processed_name == name
+        and st.session_state.pdf_bytes is not None
+        and st.session_state.txt_bytes is not None
+    )
 
-        # Timecode display
-        tc_placeholder = st.empty()
-        progress = st.progress(0)
-        log_placeholder = st.empty()
+    if not already_done:
+        if st.button("▶  INICIAR PROCESAMIENTO"):
+            frames_dir = os.path.join(tmp_dir, "frames")
+            audio_path = os.path.join(tmp_dir, "audio.wav")
 
-        steps = [
-            ("Extrayendo frames", "01"),
-            ("Extrayendo audio", "02"),
-            ("Transcribiendo con Whisper", "03"),
-            ("Generando PDF", "04"),
-        ]
+            tc_placeholder = st.empty()
+            progress = st.progress(0)
+            log_placeholder = st.empty()
 
-        def render_log(current: int):
-            lines = []
-            for i, (label, num) in enumerate(steps):
-                if i < current:
-                    cls = "done"
-                elif i == current:
-                    cls = "active"
-                else:
-                    cls = "pending"
-                lines.append(f'<div class="log-line {cls}">{num} · {label}</div>')
-            log_placeholder.markdown(
-                f'<div class="log-box">{"".join(lines)}</div>',
-                unsafe_allow_html=True
-            )
+            steps = [
+                ("Extrayendo frames", "01"),
+                ("Extrayendo audio", "02"),
+                ("Transcribiendo con Whisper", "03"),
+                ("Generando PDF", "04"),
+            ]
 
-        def tick_timecode(frame_n: int, total: int):
-            m = frame_n // 60
-            s = frame_n % 60
-            pct = int((frame_n / max(total, 1)) * 100)
-            tc_placeholder.markdown(f"""
-            <div class="timecode-bar">
-              <span><span class="timecode-rec"><span class="timecode-dot"></span>REC</span></span>
-              <span>00:{m:02d}:{s:02d}:00</span>
-              <span>{pct}% · {frame_n}/{total} frames</span>
-              <span>4K · 1fps</span>
+            def render_log(current: int):
+                lines = []
+                for i, (label, num) in enumerate(steps):
+                    if i < current:
+                        cls = "done"
+                    elif i == current:
+                        cls = "active"
+                    else:
+                        cls = "pending"
+                    lines.append(f'<div class="log-line {cls}">{num} · {label}</div>')
+                log_placeholder.markdown(
+                    f'<div class="log-box">{"".join(lines)}</div>',
+                    unsafe_allow_html=True
+                )
+
+            def tick_timecode(frame_n: int, total: int):
+                m = frame_n // 60
+                s = frame_n % 60
+                pct = int((frame_n / max(total, 1)) * 100)
+                tc_placeholder.markdown(f"""
+                <div class="timecode-bar">
+                  <span><span class="timecode-rec"><span class="timecode-dot"></span>REC</span></span>
+                  <span>00:{m:02d}:{s:02d}:00</span>
+                  <span>{pct}% · {frame_n}/{total} frames</span>
+                  <span>4K · 1fps</span>
+                </div>
+                """, unsafe_allow_html=True)
+
+            # Paso 1 — Frames
+            render_log(0)
+            tick_timecode(0, int(dur))
+            progress.progress(5)
+            extract_frames(video_path, frames_dir)
+            frames = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
+            tick_timecode(len(frames), len(frames))
+            progress.progress(25)
+
+            # Paso 2 — Audio
+            render_log(1)
+            extract_audio(video_path, audio_path)
+            progress.progress(40)
+
+            # Paso 3 — Transcripción
+            render_log(2)
+            segments = transcribe(audio_path)
+            txt_bytes = build_txt(segments, name)
+            progress.progress(70)
+
+            # Paso 4 — PDF
+            render_log(3)
+            pdf_bytes = build_pdf(frames_dir, name, vw, vh, dur)
+            progress.progress(100)
+
+            # Guardar en session_state para que persistan entre descargas
+            st.session_state.pdf_bytes = pdf_bytes
+            st.session_state.txt_bytes = txt_bytes
+            st.session_state.processed_name = name
+            st.session_state.result_meta = {
+                "frames": len(frames),
+                "segments": len(segments),
+                "ori_label": ori_label,
+                "size_pdf": len(pdf_bytes) / (1024 * 1024),
+                "size_txt": len(txt_bytes) / 1024,
+            }
+
+            # Log y timecode final
+            log_placeholder.markdown("""
+            <div class="log-box">
+              <div class="log-line done">01 · Frames extraídos</div>
+              <div class="log-line done">02 · Audio extraído</div>
+              <div class="log-line done">03 · Transcripción completada</div>
+              <div class="log-line done">04 · PDF generado</div>
             </div>
             """, unsafe_allow_html=True)
 
-        # Paso 1 — Frames
-        render_log(0)
-        tick_timecode(0, int(dur))
-        progress.progress(5)
-        extract_frames(video_path, frames_dir)
-        frames = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
-        tick_timecode(len(frames), len(frames))
-        progress.progress(25)
+            tc_placeholder.markdown(f"""
+            <div class="timecode-bar" style="border-color:#E8FF00">
+              <span style="color:#E8FF00;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.15em">
+                PROCESO COMPLETADO
+              </span>
+              <span>{len(frames)} frames · {len(segments)} segmentos</span>
+              <span>{ori_label}</span>
+            </div>
+            """, unsafe_allow_html=True)
 
-        # Paso 2 — Audio
-        render_log(1)
-        extract_audio(video_path, audio_path)
-        progress.progress(40)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            st.rerun()
 
-        # Paso 3 — Transcripción
-        render_log(2)
-        segments = transcribe(audio_path)
-        txt_bytes = build_txt(segments, name)
-        progress.progress(70)
+    # ── Bloque de descarga — se muestra tanto post-proceso como al volver ──────
+    if st.session_state.pdf_bytes is not None and st.session_state.processed_name == name:
+        meta = st.session_state.result_meta
 
-        # Paso 4 — PDF
-        render_log(3)
-        pdf_bytes = build_pdf(frames_dir, name, vw, vh, dur)
-        progress.progress(100)
+        st.markdown('<div class="section-label">03 · Descargar archivos</div>', unsafe_allow_html=True)
 
-        # Log final
-        log_placeholder.markdown("""
-        <div class="log-box">
-          <div class="log-line done">01 · Frames extraídos</div>
-          <div class="log-line done">02 · Audio extraído</div>
-          <div class="log-line done">03 · Transcripción completada</div>
-          <div class="log-line done">04 · PDF generado</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        tc_placeholder.markdown(f"""
-        <div class="timecode-bar" style="border-color:#E8FF00">
+        st.markdown(f"""
+        <div class="timecode-bar" style="border-color:#E8FF00; margin-bottom:16px;">
           <span style="color:#E8FF00;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.15em">
             PROCESO COMPLETADO
           </span>
-          <span>{len(frames)} frames · {len(segments)} segmentos de audio</span>
-          <span>{ori_label}</span>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:#666;">
+            {meta['frames']} frames · {meta['segments']} segmentos · {meta['ori_label']}
+          </span>
         </div>
         """, unsafe_allow_html=True)
-
-        # Resultados
-        st.markdown('<div class="section-label">03 · Descargar archivos</div>', unsafe_allow_html=True)
-
-        size_pdf = len(pdf_bytes) / (1024 * 1024)
-        size_txt = len(txt_bytes) / 1024
 
         col1, col2 = st.columns(2)
         with col1:
             st.markdown(f"""
             <div class="result-block">
               <div class="result-title">PDF · Frames visuales</div>
-              <div class="result-meta">{len(frames)} páginas</div>
-              <div class="result-sub">{size_pdf:.1f} MB · {ori_label}</div>
+              <div class="result-meta">{meta['frames']} páginas</div>
+              <div class="result-sub">{meta['size_pdf']:.1f} MB · {meta['ori_label']}</div>
             </div>
             """, unsafe_allow_html=True)
             st.download_button(
                 label="↓  DESCARGAR PDF",
-                data=pdf_bytes,
+                data=st.session_state.pdf_bytes,
                 file_name=f"{name}_doblecheck.pdf",
                 mime="application/pdf",
                 key="dl_pdf"
@@ -654,31 +696,38 @@ if uploaded:
             st.markdown(f"""
             <div class="result-block">
               <div class="result-title">TXT · Transcripción</div>
-              <div class="result-meta">{len(segments)} segmentos</div>
-              <div class="result-sub">{size_txt:.1f} KB · Whisper {WHISPER_MODEL}</div>
+              <div class="result-meta">{meta['segments']} segmentos</div>
+              <div class="result-sub">{meta['size_txt']:.1f} KB · Whisper {WHISPER_MODEL}</div>
             </div>
             """, unsafe_allow_html=True)
             st.download_button(
                 label="↓  DESCARGAR TXT",
-                data=txt_bytes,
+                data=st.session_state.txt_bytes,
                 file_name=f"{name}_transcripcion.txt",
                 mime="text/plain",
                 key="dl_txt"
             )
 
-        # Cleanup
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
         st.markdown("""
-        <div style="margin-top:24px; padding:16px; border:1px solid #1a1a1a; background:#050505;">
-          <span style="font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:0.15em; color:#555; text-transform:uppercase;">
-            PRÓXIMO PASO
-          </span>
-          <p style="font-size:13px; color:#888; margin:8px 0 0; line-height:1.6;">
-            Subí el PDF y el TXT al Project <strong style="color:#fff">Argos</strong> en Claude para iniciar el análisis de marca.
-          </p>
+        <div style="margin-top:16px; padding:16px; border:1px solid #1a1a1a; background:#050505; display:flex; justify-content:space-between; align-items:center;">
+          <div>
+            <span style="font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:0.15em; color:#555; text-transform:uppercase;">
+              PRÓXIMO PASO
+            </span>
+            <p style="font-size:13px; color:#888; margin:6px 0 0; line-height:1.6;">
+              Subí el PDF y el TXT al Project <strong style="color:#fff">Argos</strong> en Claude para iniciar el análisis de marca.
+            </p>
+          </div>
         </div>
         """, unsafe_allow_html=True)
+
+        # Botón para limpiar y procesar otro video
+        st.markdown("<div style='margin-top:24px;'>", unsafe_allow_html=True)
+        if st.button("✕  LIMPIAR Y PROCESAR OTRO VIDEO"):
+            for key in ("pdf_bytes", "txt_bytes", "result_meta", "processed_name"):
+                st.session_state[key] = None
+            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
 else:
     # Estado vacío
