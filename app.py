@@ -770,16 +770,44 @@ if uploaded:
             st.markdown("""
             <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#444;
                         letter-spacing:0.15em; text-transform:uppercase; margin-bottom:16px;">
-              Vista previa · PDF embebido — navegá con el scroll
+              Vista previa · Frames extraídos — 1 frame por segundo
             </div>
             """, unsafe_allow_html=True)
-            import base64
-            pdf_b64 = base64.b64encode(st.session_state.pdf_bytes).decode()
-            st.markdown(
-                f'<iframe src="data:application/pdf;base64,{pdf_b64}" '
-                f'width="100%" height="600px" style="border:1px solid #1a1a1a; background:#000;"></iframe>',
-                unsafe_allow_html=True
-            )
+
+            # Mostrar frames como grilla de imágenes (más compatible que iframe PDF)
+            preview_frames = sorted(glob.glob(os.path.join(tmp_dir, "frames", "*.jpg")))
+
+            if preview_frames:
+                # Grilla de 3 columnas
+                cols_per_row = 3
+                for row_start in range(0, min(len(preview_frames), 30), cols_per_row):
+                    row_frames = preview_frames[row_start:row_start + cols_per_row]
+                    cols = st.columns(cols_per_row)
+                    for col, fp in zip(cols, row_frames):
+                        seg_num = int(os.path.splitext(os.path.basename(fp))[0].split("_")[1])
+                        m, s = seg_num // 60, seg_num % 60
+                        with col:
+                            st.image(fp, use_container_width=True)
+                            st.markdown(
+                                f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:9px; '
+                                f'color:#444; text-align:center; letter-spacing:0.1em; margin-top:4px;">'
+                                f'00:{m:02d}:{s:02d}:00</div>',
+                                unsafe_allow_html=True
+                            )
+                if len(preview_frames) > 30:
+                    st.markdown(
+                        f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; '
+                        f'color:#444; text-align:center; letter-spacing:0.1em; margin-top:12px;">'
+                        f'· · · mostrando 30 de {len(preview_frames)} frames · descargá el PDF para ver todos · · ·</div>',
+                        unsafe_allow_html=True
+                    )
+            else:
+                st.markdown(
+                    '<div style="font-family:\'IBM Plex Mono\',monospace; font-size:11px; color:#444; '
+                    'padding:24px; text-align:center;">Los frames temporales ya fueron limpiados. '
+                    'Descargá el PDF para ver todos los frames.</div>',
+                    unsafe_allow_html=True
+                )
 
         with tab_txt:
             st.markdown("""
