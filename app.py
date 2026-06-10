@@ -117,22 +117,12 @@ code, pre, .mono { font-family: 'IBM Plex Mono', monospace !important; }
 
 /* ── Upload zone ── */
 
-/* Ocultar TODO lo que sea botón dentro del uploader */
-[data-testid="stFileUploader"] button,
-[data-testid="stFileUploader"] button *,
-[data-testid="stBaseButton-secondary"],
-[data-testid="stBaseButton-secondary"] *,
+/* Ocultar SOLO el botón browse dentro del dropzone — no tocar botones externos */
 [data-testid="stFileUploaderDropzone"] button,
-[data-testid="stWidgetLabel"],
+[data-testid="stFileUploaderDropzone"] [data-testid="stBaseButton-secondary"],
 [data-testid="stFileUploader"] > label,
-[data-testid="stFileUploaderDropzoneInstructions"] button {
+[data-testid="stWidgetLabel"] {
     display: none !important;
-    visibility: hidden !important;
-    width: 0 !important;
-    height: 0 !important;
-    overflow: hidden !important;
-    position: absolute !important;
-    pointer-events: none !important;
 }
 
 [data-testid="stFileUploader"] {
