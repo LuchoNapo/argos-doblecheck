@@ -116,33 +116,59 @@ code, pre, .mono { font-family: 'IBM Plex Mono', monospace !important; }
 }
 
 /* ── Upload zone ── */
+
+/* Ocultar TODO lo que sea botón dentro del uploader */
+[data-testid="stFileUploader"] button,
+[data-testid="stFileUploader"] button *,
+[data-testid="stBaseButton-secondary"],
+[data-testid="stBaseButton-secondary"] *,
+[data-testid="stFileUploaderDropzone"] button,
+[data-testid="stWidgetLabel"],
+[data-testid="stFileUploader"] > label,
 [data-testid="stFileUploaderDropzoneInstructions"] button {
     display: none !important;
+    visibility: hidden !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+    position: absolute !important;
+    pointer-events: none !important;
 }
-[data-testid="stFileUploader"] > label {
-    display: none !important;
-}
+
 [data-testid="stFileUploader"] {
     background: #0a0a0a !important;
     border: 1px solid #222 !important;
     border-radius: 0 !important;
-    padding: 16px !important;
+    padding: 4px !important;
 }
 [data-testid="stFileUploader"]:hover {
     border-color: #E8FF00 !important;
 }
-[data-testid="stFileUploader"] label {
-    color: #888 !important;
-    font-size: 13px !important;
-}
 [data-testid="stFileUploaderDropzone"] {
     background: transparent !important;
-    border: 1px dashed #333 !important;
+    border: 1px dashed #2a2a2a !important;
     border-radius: 0 !important;
+    padding: 28px 20px !important;
+    cursor: pointer !important;
+    transition: border-color 0.2s !important;
 }
-[data-testid="stFileUploaderDropzoneInstructions"] p {
-    color: #666 !important;
-    font-size: 12px !important;
+[data-testid="stFileUploaderDropzone"]:hover {
+    border-color: #E8FF00 !important;
+}
+[data-testid="stFileUploaderDropzoneInstructions"] {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    gap: 6px !important;
+}
+[data-testid="stFileUploaderDropzoneInstructions"] p,
+[data-testid="stFileUploaderDropzoneInstructions"] span,
+[data-testid="stFileUploaderDropzoneInstructions"] small {
+    color: #444 !important;
+    font-size: 11px !important;
+    font-family: 'IBM Plex Mono', monospace !important;
+    letter-spacing: 0.1em !important;
+    text-transform: uppercase !important;
 }
 
 /* ── Info card ── */
@@ -544,6 +570,7 @@ st.markdown('<div class="section-label">01 · Subir video</div>', unsafe_allow_h
 uploaded = st.file_uploader(
     "Arrastrá o seleccioná el video de la pieza",
     type=["mp4", "mov", "avi", "mkv", "webm"],
+    label_visibility="collapsed"
 )
 
 if uploaded:
@@ -733,7 +760,7 @@ if uploaded:
             <div class="result-block">
               <div class="result-title">TXT · Transcripción</div>
               <div class="result-meta">{meta['segments']} segmentos</div>
-              <div class="result-sub">{meta['size_txt']:.1f} KB · Whisper {WHISPER_MODEL}</div>
+              <div class="result-sub">{meta['size_txt']:.1f} KB · {meta['model_used']}</div>
             </div>
             """, unsafe_allow_html=True)
             st.download_button(
@@ -742,6 +769,42 @@ if uploaded:
                 file_name=f"{name}_transcripcion.txt",
                 mime="text/plain",
                 key="dl_txt"
+            )
+
+        # ── Previsualizadores ─────────────────────────────────────────────────
+        st.markdown('<div class="section-label" style="margin-top:32px;">04 · Previsualizar</div>', unsafe_allow_html=True)
+
+        tab_pdf, tab_txt = st.tabs(["🖼  Frames PDF", "📝  Transcripción"])
+
+        with tab_pdf:
+            st.markdown("""
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#444;
+                        letter-spacing:0.15em; text-transform:uppercase; margin-bottom:16px;">
+              Vista previa · PDF embebido — navegá con el scroll
+            </div>
+            """, unsafe_allow_html=True)
+            import base64
+            pdf_b64 = base64.b64encode(st.session_state.pdf_bytes).decode()
+            st.markdown(
+                f'<iframe src="data:application/pdf;base64,{pdf_b64}" '
+                f'width="100%" height="600px" style="border:1px solid #1a1a1a; background:#000;"></iframe>',
+                unsafe_allow_html=True
+            )
+
+        with tab_txt:
+            st.markdown("""
+            <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#444;
+                        letter-spacing:0.15em; text-transform:uppercase; margin-bottom:16px;">
+              Vista previa · Transcripción con timestamps
+            </div>
+            """, unsafe_allow_html=True)
+            txt_content = st.session_state.txt_bytes.decode("utf-8")
+            st.markdown(
+                f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:11px; '
+                f'color:#888; background:#050505; border:1px solid #1a1a1a; '
+                f'padding:20px 24px; line-height:1.9; white-space:pre-wrap; '
+                f'max-height:500px; overflow-y:auto;">{txt_content}</div>',
+                unsafe_allow_html=True
             )
 
         st.markdown("""
