@@ -544,7 +544,6 @@ st.markdown('<div class="section-label">01 · Subir video</div>', unsafe_allow_h
 uploaded = st.file_uploader(
     "Arrastrá o seleccioná el video de la pieza",
     type=["mp4", "mov", "avi", "mkv", "webm"],
-    label_visibility="collapsed"
 )
 
 if uploaded:
