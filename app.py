@@ -661,9 +661,9 @@ if uploaded:
     st.markdown('<div class="section-label">02 · Procesar</div>', unsafe_allow_html=True)
 
     # Si ya procesamos este mismo archivo, saltear y mostrar resultados directamente
+    # En modo audio pdf_bytes es None, por eso solo chequeamos txt_bytes
     already_done = (
         st.session_state.processed_name == name
-        and st.session_state.pdf_bytes is not None
         and st.session_state.txt_bytes is not None
     )
 
@@ -827,7 +827,7 @@ if uploaded:
             st.rerun()
 
     # ── Bloque de descarga — se muestra tanto post-proceso como al volver ──────
-    if st.session_state.pdf_bytes is not None and st.session_state.processed_name == name:
+    if st.session_state.txt_bytes is not None and st.session_state.processed_name == name:
         meta = st.session_state.result_meta
 
         st.markdown('<div class="section-label">03 · Descargar archivos</div>', unsafe_allow_html=True)
