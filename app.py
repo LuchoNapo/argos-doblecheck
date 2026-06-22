@@ -556,47 +556,107 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Upload
-st.markdown('<div class="section-label">01 · Subir video</div>', unsafe_allow_html=True)
-uploaded = st.file_uploader(
-    "Arrastrá o seleccioná el video de la pieza",
-    type=["mp4", "mov", "avi", "mkv", "webm"],
-    label_visibility="collapsed"
-)
+st.markdown('<div class="section-label">01 · Subir archivo</div>', unsafe_allow_html=True)
+
+mode_col1, mode_col2 = st.columns(2)
+with mode_col1:
+    st.markdown("""
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; letter-spacing:0.2em;
+                color:#444; text-transform:uppercase; margin-bottom:8px;">Modo</div>
+    """, unsafe_allow_html=True)
+    modo = st.radio(
+        "modo",
+        ["🎬  Video", "🎙  Audio"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+
+es_audio = "Audio" in modo
+
+if es_audio:
+    uploaded = st.file_uploader(
+        "Arrastrá o seleccioná el audio",
+        type=["mp3", "wav", "m4a", "aac", "ogg", "flac", "weba", "webm"],
+        label_visibility="collapsed"
+    )
+else:
+    uploaded = st.file_uploader(
+        "Arrastrá o seleccioná el video de la pieza",
+        type=["mp4", "mov", "avi", "mkv", "webm"],
+        label_visibility="collapsed"
+    )
 
 if uploaded:
     # Guardar en temp
     tmp_dir = tempfile.mkdtemp()
-    video_path = os.path.join(tmp_dir, uploaded.name)
-    with open(video_path, "wb") as f:
+    file_path = os.path.join(tmp_dir, uploaded.name)
+    with open(file_path, "wb") as f:
         f.write(uploaded.getbuffer())
 
-    # Info del video
-    info = get_video_info(video_path)
-    vw, vh, dur = info["width"], info["height"], info["duration"]
-    is_vert = vh > vw
-    ori_label = "Vertical 9:16" if is_vert else "Horizontal 16:9"
     name = os.path.splitext(uploaded.name)[0]
+    ext  = os.path.splitext(uploaded.name)[1].lower()
 
-    st.markdown(f"""
-    <div class="info-card">
-      <div class="info-item">
-        <span class="info-label">Archivo</span>
-        <span class="info-value">{uploaded.name[:32]}{"…" if len(uploaded.name) > 32 else ""}</span>
-      </div>
-      <div class="info-item">
-        <span class="info-label">Resolucion</span>
-        <span class="info-value">{vw}×{vh}</span>
-      </div>
-      <div class="info-item">
-        <span class="info-label">Duracion</span>
-        <span class="info-value">{int(dur)}s</span>
-      </div>
-      <div class="info-item">
-        <span class="info-label">Formato</span>
-        <span class="info-value accent">{ori_label}</span>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+    if es_audio:
+        # Para audio: obtener duración con ffprobe
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", file_path],
+            capture_output=True, text=True
+        )
+        try:
+            dur = float(r.stdout.strip())
+        except:
+            dur = 0
+        vw, vh = 0, 0
+        ori_label = "Audio"
+        size_mb = uploaded.size / (1024 * 1024)
+        st.markdown(f"""
+        <div class="info-card">
+          <div class="info-item">
+            <span class="info-label">Archivo</span>
+            <span class="info-value">{uploaded.name[:32]}{"…" if len(uploaded.name) > 32 else ""}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Duracion</span>
+            <span class="info-value">{int(dur)}s</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Tamaño</span>
+            <span class="info-value">{size_mb:.1f} MB</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Formato</span>
+            <span class="info-value accent">{ext.upper().replace(".", "")}</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        # Para video: info completa
+        video_path = file_path
+        info = get_video_info(video_path)
+        vw, vh, dur = info["width"], info["height"], info["duration"]
+        is_vert = vh > vw
+        ori_label = "Vertical 9:16" if is_vert else "Horizontal 16:9"
+        st.markdown(f"""
+        <div class="info-card">
+          <div class="info-item">
+            <span class="info-label">Archivo</span>
+            <span class="info-value">{uploaded.name[:32]}{"…" if len(uploaded.name) > 32 else ""}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Resolucion</span>
+            <span class="info-value">{vw}×{vh}</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Duracion</span>
+            <span class="info-value">{int(dur)}s</span>
+          </div>
+          <div class="info-item">
+            <span class="info-label">Formato</span>
+            <span class="info-value accent">{ori_label}</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown('<div class="section-label">02 · Procesar</div>', unsafe_allow_html=True)
 
@@ -651,30 +711,74 @@ if uploaded:
                 </div>
                 """, unsafe_allow_html=True)
 
-            # Paso 1 — Frames
-            render_log(0)
-            tick_timecode(0, int(dur))
-            progress.progress(5)
-            extract_frames(video_path, frames_dir)
-            frames = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
-            tick_timecode(len(frames), len(frames))
-            progress.progress(25)
+            if es_audio:
+                # ── MODO AUDIO: solo transcribir ──────────────────────────
+                steps_audio = [
+                    ("Analizando archivo", "01"),
+                    ("Transcribiendo con Whisper", "02"),
+                    ("Generando TXT", "03"),
+                ]
 
-            # Paso 2 — Audio
-            render_log(1)
-            extract_audio(video_path, audio_path)
-            progress.progress(40)
+                def render_log_audio(current):
+                    lines = []
+                    for i, (label, num) in enumerate(steps_audio):
+                        cls = "done" if i < current else ("active" if i == current else "pending")
+                        lines.append(f'<div class="log-line {cls}">{num} · {label}</div>')
+                    log_placeholder.markdown(f'<div class="log-box">{"".join(lines)}</div>', unsafe_allow_html=True)
 
-            # Paso 3 — Transcripción
-            render_log(2)
-            segments, model_used = transcribe(audio_path)
-            txt_bytes = build_txt(segments, name)
-            progress.progress(70)
+                render_log_audio(0)
+                progress.progress(10)
 
-            # Paso 4 — PDF
-            render_log(3)
-            pdf_bytes = build_pdf(frames_dir, name, vw, vh, dur)
-            progress.progress(100)
+                # Convertir a WAV si no lo es
+                if not file_path.endswith(".wav"):
+                    wav_path = os.path.join(tmp_dir, "audio.wav")
+                    subprocess.run([
+                        "ffmpeg", "-i", file_path,
+                        "-ac", "1", "-ar", "16000", wav_path,
+                        "-hide_banner", "-loglevel", "error", "-y"
+                    ], check=True)
+                else:
+                    wav_path = file_path
+
+                progress.progress(30)
+                render_log_audio(1)
+                segments, model_used = transcribe(wav_path)
+                progress.progress(75)
+
+                render_log_audio(2)
+                txt_bytes = build_txt(segments, name)
+                pdf_bytes = None   # no hay PDF en modo audio
+                frames = []
+                progress.progress(100)
+
+            else:
+                # ── MODO VIDEO: pipeline completo ─────────────────────────
+                video_path = file_path
+
+                # Paso 1 — Frames
+                render_log(0)
+                tick_timecode(0, int(dur))
+                progress.progress(5)
+                extract_frames(video_path, frames_dir)
+                frames = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
+                tick_timecode(len(frames), len(frames))
+                progress.progress(25)
+
+                # Paso 2 — Audio
+                render_log(1)
+                extract_audio(video_path, audio_path)
+                progress.progress(40)
+
+                # Paso 3 — Transcripción
+                render_log(2)
+                segments, model_used = transcribe(audio_path)
+                txt_bytes = build_txt(segments, name)
+                progress.progress(70)
+
+                # Paso 4 — PDF
+                render_log(3)
+                pdf_bytes = build_pdf(frames_dir, name, vw, vh, dur)
+                progress.progress(100)
 
             # Guardar en session_state para que persistan entre descargas
             st.session_state.pdf_bytes = pdf_bytes
@@ -684,20 +788,30 @@ if uploaded:
                 "frames": len(frames),
                 "segments": len(segments),
                 "ori_label": ori_label,
-                "size_pdf": len(pdf_bytes) / (1024 * 1024),
+                "size_pdf": len(pdf_bytes) / (1024 * 1024) if pdf_bytes else 0,
                 "size_txt": len(txt_bytes) / 1024,
                 "model_used": model_used,
+                "es_audio": es_audio,
             }
 
             # Log y timecode final
-            log_placeholder.markdown("""
-            <div class="log-box">
-              <div class="log-line done">01 · Frames extraídos</div>
-              <div class="log-line done">02 · Audio extraído</div>
-              <div class="log-line done">03 · Transcripción completada</div>
-              <div class="log-line done">04 · PDF generado</div>
-            </div>
-            """, unsafe_allow_html=True)
+            if es_audio:
+                log_placeholder.markdown("""
+                <div class="log-box">
+                  <div class="log-line done">01 · Archivo analizado</div>
+                  <div class="log-line done">02 · Transcripción completada</div>
+                  <div class="log-line done">03 · TXT generado</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                log_placeholder.markdown("""
+                <div class="log-box">
+                  <div class="log-line done">01 · Frames extraídos</div>
+                  <div class="log-line done">02 · Audio extraído</div>
+                  <div class="log-line done">03 · Transcripción completada</div>
+                  <div class="log-line done">04 · PDF generado</div>
+                </div>
+                """, unsafe_allow_html=True)
 
             tc_placeholder.markdown(f"""
             <div class="timecode-bar" style="border-color:#E8FF00">
@@ -729,87 +843,58 @@ if uploaded:
         </div>
         """, unsafe_allow_html=True)
 
-        col1, col2 = st.columns(2)
-        with col1:
+        if not meta.get("es_audio") and st.session_state.pdf_bytes:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"""
+                <div class="result-block">
+                  <div class="result-title">PDF · Frames visuales</div>
+                  <div class="result-meta">{meta['frames']} páginas</div>
+                  <div class="result-sub">{meta['size_pdf']:.1f} MB · {meta['ori_label']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                st.download_button(
+                    label="↓  DESCARGAR PDF",
+                    data=st.session_state.pdf_bytes,
+                    file_name=f"{name}_doblecheck.pdf",
+                    mime="application/pdf",
+                    key="dl_pdf"
+                )
+            with col2:
+                st.markdown(f"""
+                <div class="result-block">
+                  <div class="result-title">TXT · Transcripción</div>
+                  <div class="result-meta">{meta['segments']} segmentos</div>
+                  <div class="result-sub">{meta['size_txt']:.1f} KB · {meta['model_used']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+                st.download_button(
+                    label="↓  DESCARGAR TXT",
+                    data=st.session_state.txt_bytes,
+                    file_name=f"{name}_transcripcion.txt",
+                    mime="text/plain",
+                    key="dl_txt"
+                )
+        else:
             st.markdown(f"""
             <div class="result-block">
-              <div class="result-title">PDF · Frames visuales</div>
-              <div class="result-meta">{meta['frames']} páginas</div>
-              <div class="result-sub">{meta['size_pdf']:.1f} MB · {meta['ori_label']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            st.download_button(
-                label="↓  DESCARGAR PDF",
-                data=st.session_state.pdf_bytes,
-                file_name=f"{name}_doblecheck.pdf",
-                mime="application/pdf",
-                key="dl_pdf"
-            )
-        with col2:
-            st.markdown(f"""
-            <div class="result-block">
-              <div class="result-title">TXT · Transcripción</div>
+              <div class="result-title">TXT · Transcripción de audio</div>
               <div class="result-meta">{meta['segments']} segmentos</div>
               <div class="result-sub">{meta['size_txt']:.1f} KB · {meta['model_used']}</div>
             </div>
             """, unsafe_allow_html=True)
             st.download_button(
-                label="↓  DESCARGAR TXT",
+                label="↓  DESCARGAR TRANSCRIPCIÓN",
                 data=st.session_state.txt_bytes,
                 file_name=f"{name}_transcripcion.txt",
                 mime="text/plain",
                 key="dl_txt"
             )
-
         # ── Previsualizadores ─────────────────────────────────────────────────
         st.markdown('<div class="section-label" style="margin-top:32px;">04 · Previsualizar</div>', unsafe_allow_html=True)
 
-        tab_pdf, tab_txt = st.tabs(["🖼  Frames PDF", "📝  Transcripción"])
-
-        with tab_pdf:
-            st.markdown("""
-            <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#444;
-                        letter-spacing:0.15em; text-transform:uppercase; margin-bottom:16px;">
-              Vista previa · Frames extraídos — 1 frame por segundo
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Mostrar frames como grilla de imágenes (más compatible que iframe PDF)
-            preview_frames = sorted(glob.glob(os.path.join(tmp_dir, "frames", "*.jpg")))
-
-            if preview_frames:
-                # Grilla de 3 columnas
-                cols_per_row = 3
-                for row_start in range(0, min(len(preview_frames), 30), cols_per_row):
-                    row_frames = preview_frames[row_start:row_start + cols_per_row]
-                    cols = st.columns(cols_per_row)
-                    for col, fp in zip(cols, row_frames):
-                        seg_num = int(os.path.splitext(os.path.basename(fp))[0].split("_")[1])
-                        m, s = seg_num // 60, seg_num % 60
-                        with col:
-                            st.image(fp, use_container_width=True)
-                            st.markdown(
-                                f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:9px; '
-                                f'color:#444; text-align:center; letter-spacing:0.1em; margin-top:4px;">'
-                                f'00:{m:02d}:{s:02d}:00</div>',
-                                unsafe_allow_html=True
-                            )
-                if len(preview_frames) > 30:
-                    st.markdown(
-                        f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; '
-                        f'color:#444; text-align:center; letter-spacing:0.1em; margin-top:12px;">'
-                        f'· · · mostrando 30 de {len(preview_frames)} frames · descargá el PDF para ver todos · · ·</div>',
-                        unsafe_allow_html=True
-                    )
-            else:
-                st.markdown(
-                    '<div style="font-family:\'IBM Plex Mono\',monospace; font-size:11px; color:#444; '
-                    'padding:24px; text-align:center;">Los frames temporales ya fueron limpiados. '
-                    'Descargá el PDF para ver todos los frames.</div>',
-                    unsafe_allow_html=True
-                )
-
-        with tab_txt:
+        if meta.get("es_audio"):
+            # Modo audio — solo transcripción
             st.markdown("""
             <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#444;
                         letter-spacing:0.15em; text-transform:uppercase; margin-bottom:16px;">
@@ -824,6 +909,65 @@ if uploaded:
                 f'max-height:500px; overflow-y:auto;">{txt_content}</div>',
                 unsafe_allow_html=True
             )
+        else:
+            # Modo video — frames + transcripción en tabs
+            tab_pdf, tab_txt_container = st.tabs(["🖼  Frames", "📝  Transcripción"])
+
+            if tab_pdf is not None:
+                with tab_pdf:
+                    st.markdown("""
+                    <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#444;
+                                letter-spacing:0.15em; text-transform:uppercase; margin-bottom:16px;">
+                      Vista previa · Frames extraídos — 1 frame por segundo
+                    </div>
+                    """, unsafe_allow_html=True)
+                    preview_frames = sorted(glob.glob(os.path.join(tmp_dir, "frames", "*.jpg")))
+                    if preview_frames:
+                        cols_per_row = 3
+                        for row_start in range(0, min(len(preview_frames), 30), cols_per_row):
+                            row_frames = preview_frames[row_start:row_start + cols_per_row]
+                            cols = st.columns(cols_per_row)
+                            for col, fp in zip(cols, row_frames):
+                                seg_num = int(os.path.splitext(os.path.basename(fp))[0].split("_")[1])
+                                m, s = seg_num // 60, seg_num % 60
+                                with col:
+                                    st.image(fp, use_container_width=True)
+                                    st.markdown(
+                                        f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:9px; '
+                                        f'color:#444; text-align:center; letter-spacing:0.1em; margin-top:4px;">' 
+                                        f'00:{m:02d}:{s:02d}:00</div>',
+                                        unsafe_allow_html=True
+                                    )
+                        if len(preview_frames) > 30:
+                            st.markdown(
+                                f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; '
+                                f'color:#444; text-align:center; letter-spacing:0.1em; margin-top:12px;">'
+                                f'· · · mostrando 30 de {len(preview_frames)} frames · descargá el PDF para ver todos · · ·</div>',
+                                unsafe_allow_html=True
+                            )
+                    else:
+                        st.markdown(
+                            '<div style="font-family:\'IBM Plex Mono\',monospace; font-size:11px; color:#444; '
+                            'padding:24px; text-align:center;">Los frames temporales ya fueron limpiados. '
+                            'Descargá el PDF para ver todos los frames.</div>',
+                            unsafe_allow_html=True
+                        )
+
+            with tab_txt_container:
+                st.markdown("""
+                <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#444;
+                            letter-spacing:0.15em; text-transform:uppercase; margin-bottom:16px;">
+                  Vista previa · Transcripción con timestamps
+                </div>
+                """, unsafe_allow_html=True)
+                txt_content = st.session_state.txt_bytes.decode("utf-8")
+                st.markdown(
+                    f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:11px; '
+                    f'color:#888; background:#050505; border:1px solid #1a1a1a; '
+                    f'padding:20px 24px; line-height:1.9; white-space:pre-wrap; '
+                    f'max-height:500px; overflow-y:auto;">{txt_content}</div>',
+                    unsafe_allow_html=True
+                )
 
         st.markdown("""
         <div style="margin-top:16px; padding:16px; border:1px solid #1a1a1a; background:#050505; display:flex; justify-content:space-between; align-items:center;">
@@ -854,9 +998,9 @@ else:
         EN ESPERA
       </div>
       <div style="font-size:13px; color:#3a3a3a; line-height:1.7;">
-        Subí un video MP4, MOV o MKV para comenzar.<br>
-        El sistema extraerá los frames y transcribirá el audio<br>
-        para preparar los archivos para revisión en Claude.
+        Subí un video (MP4, MOV, MKV) o un audio (MP3, WAV, M4A) para comenzar.<br>
+        El sistema extraerá los frames, transcribirá el audio<br>
+        y preparará los archivos para revisión en Claude.
       </div>
     </div>
     """, unsafe_allow_html=True)
