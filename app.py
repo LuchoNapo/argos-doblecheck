@@ -669,31 +669,25 @@ st.markdown("""
 # Upload
 st.markdown('<div class="section-label">01 · Subir archivo</div>', unsafe_allow_html=True)
 
-mode_col1, mode_col2 = st.columns(2)
-with mode_col1:
-    st.markdown("""
-    <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; letter-spacing:0.2em;
-                color:#444; text-transform:uppercase; margin-bottom:8px;">Modo</div>
-    """, unsafe_allow_html=True)
-    modo = st.radio(
-        "modo",
-        ["🎬  Video", "🎙  Audio"],
-        horizontal=True,
-        label_visibility="collapsed"
-    )
+st.markdown("""
+<div style="font-family:'IBM Plex Mono',monospace; font-size:9px; letter-spacing:0.2em;
+            color:#444; text-transform:uppercase; margin-bottom:8px;">Modo</div>
+""", unsafe_allow_html=True)
 
-es_audio = "Audio" in modo
+# Un solo selector con las tres variantes de "qué subo / qué obtengo":
+MODO_VIDEO_PDF   = "🎬  Video (con PDF)"      # video → frames + PDF + transcripción
+MODO_VIDEO_AUDIO = "🎬  Video (solo audio)"   # video → sólo transcripción, sin PDF
+MODO_AUDIO       = "🎙  Audio"                # archivo de audio → sólo transcripción
 
-# En modo video: opción de transcribir SÓLO el audio, sin generar el PDF de frames.
-# Útil para videos largos donde sólo interesa la transcripción.
-solo_audio = False
-if not es_audio:
-    with mode_col2:
-        st.markdown("""
-        <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; letter-spacing:0.2em;
-                    color:#444; text-transform:uppercase; margin-bottom:8px;">Salida</div>
-        """, unsafe_allow_html=True)
-        solo_audio = st.checkbox("Solo transcribir el audio (sin PDF)", value=False)
+modo = st.radio(
+    "modo",
+    [MODO_VIDEO_PDF, MODO_VIDEO_AUDIO, MODO_AUDIO],
+    horizontal=True,
+    label_visibility="collapsed"
+)
+
+es_audio   = (modo == MODO_AUDIO)          # se subió un archivo de audio
+solo_audio = (modo == MODO_VIDEO_AUDIO)    # es video, pero sólo interesa la transcripción
 
 if es_audio:
     uploaded = st.file_uploader(
