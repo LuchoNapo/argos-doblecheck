@@ -29,6 +29,8 @@ WHISPER_MODEL = "small"   # local fallback si no hay Groq API key
 GROQ_MODEL    = "whisper-large-v3"  # API de Groq — mejor calidad, corre en sus servidores
 GROQ_CHUNK_LIMIT = 24 * 1024 * 1024   # 24 MB — margen seguro bajo el límite de 25 MB de Groq free tier
 CHUNK_SECONDS    = 20 * 60            # 20 min por parte al dividir audios largos
+MAX_PDF_SECONDS   = 30 * 60          # tope para generar PDF de frames; más largo → conviene "solo audio"
+LOCAL_MAX_SECONDS = 20 * 60          # tope para transcribir sin Groq (Whisper local es lento y usa RAM)
 
 # ─── Session state init ───────────────────────────────────────────────────────
 for key in ("pdf_bytes", "txt_bytes", "result_meta", "processed_name"):
@@ -365,6 +367,11 @@ footer { display: none !important; }
 
 # ─── Funciones de procesamiento ───────────────────────────────────────────────
 
+class ArchivoDemasiadoPesado(Exception):
+    """Se lanza cuando un archivo no se puede procesar de forma segura — corta limpio en vez de crashear."""
+    pass
+
+
 def get_video_info(path: str) -> dict:
     cmd = [
         "ffprobe", "-v", "error",
@@ -505,10 +512,35 @@ def transcribe(audio_path: str, status_placeholder=None) -> tuple[list[dict], st
         except Exception as e:
             st.warning(f"⚠️  Groq API error: {e} — usando Whisper small local.")
 
-    # Fallback local
+    # Fallback local (Whisper small) — sólo cuando no hay Groq disponible.
+    # Whisper local es MUCHO más lento y corre en la RAM del contenedor (1 GB),
+    # así que acá sí hay que cuidar el tamaño para no reventar la app.
+    dur = _audio_duration(audio_path)
+    if dur > LOCAL_MAX_SECONDS:
+        raise ArchivoDemasiadoPesado(
+            f"El archivo dura {int(dur // 60)} min y Groq no está disponible en este momento. "
+            f"La transcripción local sólo soporta hasta {LOCAL_MAX_SECONDS // 60} min sin arriesgar la app. "
+            f"Reintentá cuando Groq esté disponible o subí un archivo más corto."
+        )
+
     model = whisper.load_model(WHISPER_MODEL)
-    result = model.transcribe(audio_path, language="es", verbose=False)
-    return result["segments"], f"Whisper local / {WHISPER_MODEL}"
+
+    # Si entra en una sola pasada, directo.
+    if os.path.getsize(audio_path) <= GROQ_CHUNK_LIMIT:
+        result = model.transcribe(audio_path, language="es", verbose=False)
+        return result["segments"], f"Whisper local / {WHISPER_MODEL}"
+
+    # Grande (pero dentro de LOCAL_MAX_SECONDS) → partir igual para no cargar todo en memoria.
+    chunk_dir = os.path.join(os.path.dirname(audio_path), "chunks_local")
+    chunks = _split_audio(audio_path, chunk_dir)
+    all_segments = []
+    offset = 0.0
+    for c in chunks:
+        result = model.transcribe(c, language="es", verbose=False)
+        all_segments.extend(_parse_groq_segments(result["segments"], offset))
+        offset += _audio_duration(c)
+    shutil.rmtree(chunk_dir, ignore_errors=True)
+    return all_segments, f"Whisper local / {WHISPER_MODEL} · {len(chunks)} partes"
 
 
 def build_txt(segments: list[dict], name: str) -> bytes:
@@ -651,6 +683,17 @@ with mode_col1:
     )
 
 es_audio = "Audio" in modo
+
+# En modo video: opción de transcribir SÓLO el audio, sin generar el PDF de frames.
+# Útil para videos largos donde sólo interesa la transcripción.
+solo_audio = False
+if not es_audio:
+    with mode_col2:
+        st.markdown("""
+        <div style="font-family:'IBM Plex Mono',monospace; font-size:9px; letter-spacing:0.2em;
+                    color:#444; text-transform:uppercase; margin-bottom:8px;">Salida</div>
+        """, unsafe_allow_html=True)
+        solo_audio = st.checkbox("Solo transcribir el audio (sin PDF)", value=False)
 
 if es_audio:
     uploaded = st.file_uploader(
@@ -803,8 +846,8 @@ if uploaded:
                 </div>
                 """, unsafe_allow_html=True)
 
-            if es_audio:
-                # ── MODO AUDIO: solo transcribir ──────────────────────────
+            if es_audio or solo_audio:
+                # ── SOLO TRANSCRIPCIÓN (audio, o video sin PDF) ───────────
                 steps_audio = [
                     ("Analizando archivo", "01"),
                     ("Transcribiendo con Whisper", "02"),
@@ -835,7 +878,15 @@ if uploaded:
                 progress.progress(30)
                 render_log_audio(1)
                 chunk_status = st.empty()
-                segments, model_used = transcribe(wav_path, status_placeholder=chunk_status)
+                try:
+                    segments, model_used = transcribe(wav_path, status_placeholder=chunk_status)
+                except ArchivoDemasiadoPesado as e:
+                    chunk_status.empty()
+                    progress.empty()
+                    log_placeholder.empty()
+                    st.error(f"⚠️  {e}")
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    st.stop()
                 chunk_status.empty()
                 progress.progress(75)
 
@@ -846,8 +897,21 @@ if uploaded:
                 progress.progress(100)
 
             else:
-                # ── MODO VIDEO: pipeline completo ─────────────────────────
+                # ── MODO VIDEO: pipeline completo (frames + PDF) ──────────
                 video_path = file_path
+
+                # Guard: video muy largo + PDF pedido → cortar antes de arriesgar la RAM
+                if dur > MAX_PDF_SECONDS:
+                    progress.empty()
+                    log_placeholder.empty()
+                    tc_placeholder.empty()
+                    st.error(
+                        f"⚠️  El video dura {int(dur // 60)} min — demasiado para generar el "
+                        f"PDF de frames sin arriesgar la app (serían ~{int(dur)} páginas). "
+                        f"Activá «Solo transcribir el audio (sin PDF)» y volvé a procesar."
+                    )
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    st.stop()
 
                 # Paso 1 — Frames
                 render_log(0)
@@ -866,7 +930,16 @@ if uploaded:
                 # Paso 3 — Transcripción
                 render_log(2)
                 chunk_status = st.empty()
-                segments, model_used = transcribe(audio_path, status_placeholder=chunk_status)
+                try:
+                    segments, model_used = transcribe(audio_path, status_placeholder=chunk_status)
+                except ArchivoDemasiadoPesado as e:
+                    chunk_status.empty()
+                    progress.empty()
+                    log_placeholder.empty()
+                    tc_placeholder.empty()
+                    st.error(f"⚠️  {e}")
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                    st.stop()
                 chunk_status.empty()
                 txt_bytes = build_txt(segments, name)
                 progress.progress(70)
@@ -888,10 +961,11 @@ if uploaded:
                 "size_txt": len(txt_bytes) / 1024,
                 "model_used": model_used,
                 "es_audio": es_audio,
+                "solo_audio": solo_audio,
             }
 
             # Log y timecode final
-            if es_audio:
+            if es_audio or solo_audio:
                 log_placeholder.markdown("""
                 <div class="log-box">
                   <div class="log-line done">01 · Archivo analizado</div>
@@ -989,8 +1063,8 @@ if uploaded:
         # ── Previsualizadores ─────────────────────────────────────────────────
         st.markdown('<div class="section-label" style="margin-top:32px;">04 · Previsualizar</div>', unsafe_allow_html=True)
 
-        if meta.get("es_audio"):
-            # Modo audio — solo transcripción
+        if meta.get("es_audio") or meta.get("solo_audio"):
+            # Sólo transcripción (audio, o video sin PDF)
             st.markdown("""
             <div style="font-family:'IBM Plex Mono',monospace; font-size:10px; color:#444;
                         letter-spacing:0.15em; text-transform:uppercase; margin-bottom:16px;">
