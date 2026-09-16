@@ -27,6 +27,8 @@ st.set_page_config(
 MARGEN = 12.0          # mm
 WHISPER_MODEL = "small"   # local fallback si no hay Groq API key
 GROQ_MODEL    = "whisper-large-v3"  # API de Groq — mejor calidad, corre en sus servidores
+GROQ_CHUNK_LIMIT = 24 * 1024 * 1024   # 24 MB — margen seguro bajo el límite de 25 MB de Groq free tier
+CHUNK_SECONDS    = 20 * 60            # 20 min por parte al dividir audios largos
 
 # ─── Session state init ───────────────────────────────────────────────────────
 for key in ("pdf_bytes", "txt_bytes", "result_meta", "processed_name"):
@@ -399,33 +401,107 @@ def extract_audio(video_path: str, audio_path: str):
     ], check=True)
 
 
-def transcribe(audio_path: str) -> tuple[list[dict], str]:
+def _audio_duration(path: str) -> float:
+    """Duración en segundos de un archivo de audio, vía ffprobe."""
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        capture_output=True, text=True
+    )
+    try:
+        return float(r.stdout.strip())
+    except (ValueError, TypeError):
+        return float(CHUNK_SECONDS)
+
+
+def _split_audio(audio_path: str, chunk_dir: str) -> list[str]:
+    """
+    Divide el audio en partes de ~20 min, cada una MP3 mono 16 kHz a 64 kbps
+    (~9 MB por parte, bien por debajo del límite de 25 MB de Groq).
+    Devuelve la lista ordenada de rutas de las partes.
+    """
+    os.makedirs(chunk_dir, exist_ok=True)
+    subprocess.run([
+        "ffmpeg", "-i", audio_path,
+        "-f", "segment",
+        "-segment_time", str(CHUNK_SECONDS),
+        "-ac", "1", "-ar", "16000",
+        "-c:a", "libmp3lame", "-b:a", "64k",
+        os.path.join(chunk_dir, "chunk_%03d.mp3"),
+        "-hide_banner", "-loglevel", "error", "-y"
+    ], check=True)
+    return sorted(glob.glob(os.path.join(chunk_dir, "chunk_*.mp3")))
+
+
+def _parse_groq_segments(segments, offset: float) -> list[dict]:
+    """
+    Normaliza segmentos (pueden venir como dict o como objeto según la versión
+    del SDK) y les suma el offset de tiempo de la parte a la que pertenecen.
+    """
+    out = []
+    for s in segments:
+        if isinstance(s, dict):
+            start, end, text = s["start"], s["end"], s["text"]
+        else:
+            start, end, text = s.start, s.end, s.text
+        out.append({"start": start + offset, "end": end + offset, "text": text})
+    return out
+
+
+def _transcribe_groq_chunk(client, path: str, offset: float) -> list[dict]:
+    """Transcribe una sola parte con Groq y devuelve sus segmentos con offset aplicado."""
+    with open(path, "rb") as f:
+        response = client.audio.transcriptions.create(
+            file=(os.path.basename(path), f.read()),
+            model=GROQ_MODEL,
+            language="es",
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
+        )
+    return _parse_groq_segments(response.segments, offset)
+
+
+def transcribe(audio_path: str, status_placeholder=None) -> tuple[list[dict], str]:
     """
     Transcribe con Groq Whisper large-v3 si hay API key configurada,
     sino cae a Whisper small local.
-    Devuelve (segmentos, modelo_usado).
+
+    Si el audio supera el límite seguro de Groq (24 MB), lo divide en partes
+    de ~20 min, transcribe cada una y las une reconstruyendo los timestamps
+    con un offset acumulado. Devuelve (segmentos, modelo_usado).
     """
     groq_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else ""
 
     if groq_key and GROQ_AVAILABLE:
         try:
             client = Groq(api_key=groq_key)
-            with open(audio_path, "rb") as f:
-                response = client.audio.transcriptions.create(
-                    file=(os.path.basename(audio_path), f.read()),
-                    model=GROQ_MODEL,
-                    language="es",
-                    response_format="verbose_json",
-                    timestamp_granularities=["segment"],
-                )
-            # Los segmentos pueden venir como objetos o como dicts según la versión del SDK
-            segments = []
-            for s in response.segments:
-                if isinstance(s, dict):
-                    segments.append({"start": s["start"], "end": s["end"], "text": s["text"]})
-                else:
-                    segments.append({"start": s.start, "end": s.end, "text": s.text})
-            return segments, f"Groq / {GROQ_MODEL}"
+            size = os.path.getsize(audio_path)
+
+            # Archivo dentro del límite → una sola llamada
+            if size <= GROQ_CHUNK_LIMIT:
+                segments = _transcribe_groq_chunk(client, audio_path, 0.0)
+                return segments, f"Groq / {GROQ_MODEL}"
+
+            # Archivo grande → dividir en partes y unir
+            chunk_dir = os.path.join(os.path.dirname(audio_path), "chunks")
+            chunks = _split_audio(audio_path, chunk_dir)
+
+            all_segments = []
+            offset = 0.0
+            for i, chunk_path in enumerate(chunks):
+                if status_placeholder is not None:
+                    status_placeholder.markdown(
+                        f'<div style="font-family:\'IBM Plex Mono\',monospace; font-size:10px; '
+                        f'letter-spacing:0.15em; color:#E8FF00; text-transform:uppercase;">'
+                        f'Transcribiendo parte {i + 1} de {len(chunks)}…</div>',
+                        unsafe_allow_html=True
+                    )
+                all_segments.extend(_transcribe_groq_chunk(client, chunk_path, offset))
+                offset += _audio_duration(chunk_path)
+
+            shutil.rmtree(chunk_dir, ignore_errors=True)
+            return all_segments, f"Groq / {GROQ_MODEL} · {len(chunks)} partes"
+
         except Exception as e:
             st.warning(f"⚠️  Groq API error: {e} — usando Whisper small local.")
 
@@ -443,7 +519,10 @@ def build_txt(segments: list[dict], name: str) -> bytes:
     for s in segments:
         ini = int(s["start"])
         fin = int(s["end"])
-        lines.append(f"[{ini:02d}s - {fin:02d}s] {s['text'].strip()}\n")
+        lines.append(
+            f"[{ini // 60:02d}:{ini % 60:02d} - {fin // 60:02d}:{fin % 60:02d}] "
+            f"{s['text'].strip()}\n"
+        )
     return "".join(lines).encode("utf-8")
 
 
@@ -585,6 +664,19 @@ else:
         type=["mp4", "mov", "avi", "mkv", "webm"],
         label_visibility="collapsed"
     )
+
+# Nota de límite — se sincroniza solo con maxUploadSize del config.toml
+_max_mb = st.get_option("server.maxUploadSize") or 500
+st.markdown(
+    f"""
+    <div style="font-family:'IBM Plex Mono',monospace; font-size:10px;
+                letter-spacing:0.12em; text-transform:uppercase; color:#E8FF00;
+                opacity:0.85; margin:8px 0 4px;">
+      · Peso máximo por archivo: {_max_mb} MB · Los audios largos se dividen y se unen solos ·
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 if uploaded:
     # Guardar en temp
@@ -742,7 +834,9 @@ if uploaded:
 
                 progress.progress(30)
                 render_log_audio(1)
-                segments, model_used = transcribe(wav_path)
+                chunk_status = st.empty()
+                segments, model_used = transcribe(wav_path, status_placeholder=chunk_status)
+                chunk_status.empty()
                 progress.progress(75)
 
                 render_log_audio(2)
@@ -771,7 +865,9 @@ if uploaded:
 
                 # Paso 3 — Transcripción
                 render_log(2)
-                segments, model_used = transcribe(audio_path)
+                chunk_status = st.empty()
+                segments, model_used = transcribe(audio_path, status_placeholder=chunk_status)
+                chunk_status.empty()
                 txt_bytes = build_txt(segments, name)
                 progress.progress(70)
 
