@@ -1,6 +1,6 @@
 """
 Argos · Doble Check — Procesador de Video
-Aenima · Fluxer · Bound  /  Cliente: Paladini Argentina
+Aenima · Fluxer · Bound  /  Uso interno
 
 Uso: streamlit run app.py
 """
@@ -605,7 +605,7 @@ def build_pdf(frames_dir: str, name: str, vw: int, vh: int, dur: float) -> bytes
         ("Orientacion", ori_str),
         ("Frames", f"{len(sorted(glob.glob(os.path.join(frames_dir, '*.jpg'))))}"),
         ("Modelo Whisper", WHISPER_MODEL.upper()),
-        ("Cliente", "Paladini Argentina"),
+        ("Uso interno exclusivo", "Argos · Doble Check"),
     ]:
         pdf.set_xy(MARGEN, y)
         pdf.set_font("Helvetica", "B", 8)
@@ -662,7 +662,7 @@ st.markdown("""
   <div class="argos-eyebrow">Aenima · Fluxer · Bound — Sistema QA</div>
   <div class="argos-logo">ARGOS <span>·</span> DOBLE CHECK</div>
   <div class="argos-title">Procesador<br>de Video</div>
-  <div class="argos-subtitle">Preparación de assets para análisis de marca — Cliente Paladini Argentina</div>
+  <div class="argos-subtitle">Preparación de assets para análisis de marca</div>
 </div>
 """, unsafe_allow_html=True)
 

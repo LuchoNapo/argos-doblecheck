@@ -1,7 +1,7 @@
 # Argos · Doble Check
 
 **Sistema de QA asistido por IA** — Aenima · Fluxer · Bound  
-Procesador de video para análisis de marca. Cliente: Paladini Argentina.
+Procesador de video para análisis de marca.
 
 Extrae frames y transcribe el audio de una pieza para preparar los archivos para revisión en el Project Argos de Claude.
 
